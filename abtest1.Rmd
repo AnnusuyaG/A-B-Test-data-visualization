@@ -1,0 +1,460 @@
+---
+title: "Effect of RGB manipulation on visual attention"
+author: "Group3"
+date: "2025-01-15"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width = 8)
+knitr::opts_chunk$set(fig.height = 8)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(printr)
+
+require(readxl)
+require(jpeg)
+require(ggimg)
+
+```
+
+### Input and preparation
+
+###### Reading Stimulus meta data.
+
+```{r}
+
+read_abtest1_stim <- 
+  function(file = "Stimuli/Stimuli.csv", 
+           stim_dir = "Stimuli/",
+           col_types = cols(File = col_character(),
+                            width = col_double(),
+                            height = col_double())){
+    stimuli <-
+      read_csv(file,
+               col_types = col_types) %>% 
+      mutate(
+      Path = str_c(stim_dir, File, sep = "")
+      )
+    return(stimuli)    
+  }
+
+read_abtest1_stim()
+
+```
+
+```{r}
+
+my_Stim_col_types <- cols(  File = col_character(),
+                            width = col_double(),
+                            height = col_double(),
+                            red_aoi = col_logical(),
+                            green_aoi = col_logical(),
+                            blue_aoi = col_logical(),
+                            white_aoi = col_logical(),
+                            Face = col_character())
+
+```
+
+```{r}
+
+Stimuli <-
+  read_abtest1_stim(col_types = my_Stim_col_types) %>% 
+      mutate(Stim = File)
+
+```
+
+### Making a stimulus grid
+
+###### In order to display all of the stimuli images side by side in a grid format, this section generates a reusable visual grid. Additional overlays and visualizations (such as gaze data or AOIs) are built upon the grid. Stimulus grid is essential for verifying the stimuli and ensuring their correct dimensions and layout before analyzing participant data.
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_0 <- Stimuli %>% 
+    ggplot(aes(xmin = 0, xmax = width, 
+                        ymin = 0, ymax = height)) +
+    facet_wrap(~Stim) +
+    ggimg::geom_rect_img(aes(img = Path))
+
+```
+
+### Reading csv
+
+###### Loads gaze points, removes duplicate entries, and ensures the data is cleaned for further analysis by retaining relevant columns such as experiment (Exp), participant (Part), stimulus (Stim), and gaze coordinates (x, y).
+
+###### Processes gaze data from multiple participant files, combining them into a single dataset. The read_abtest1_files function aligns the gaze data with stimulus metadata, adjusts time to start from zero for each participant, and translates gaze coordinates to match the stimuli dimensions, ensuring consistency and accuracy for further analysis.
+
+```{r read_data}
+
+read_abtest1_csv <- function(file){
+  read_csv(file, 
+           col_types = cols(Exp = col_character(), Part = col_character(), 
+                            Stim = col_character(), time = col_double(), 
+                            x = col_double(), y = col_double(), 
+                            x_pro = col_double(), y_pro = col_double())) %>% 
+    mutate(is_duplicate = x == lag(x) & y == lag(y)) %>% 
+    filter(!is_duplicate) %>% 
+    mutate(File = file) %>% 
+    select(Exp, Part, Stim, time, x, y, x_pro, y_pro)
+}
+
+read_abtest1_files <- function(files, stim_tab){
+  Data <- 
+    files %>% 
+    map_df(read_abtest1_csv) %>% 
+    mutate(Obs  = row_number()) %>%
+    mutate(Part = as.factor(as.integer(Part) - min(as.integer(Part)) + 1)) %>% ## reducing the Part identifier
+    group_by(Part) %>%
+    mutate(time = time - min(time)) %>% # time since start experiment
+    ungroup() %>%
+    left_join(stim_tab, by = "Stim") %>% 
+    mutate(y = height - y, # translating from origin at top (pygame) to bottom (ggplot)
+           y_pro = 1 - y_pro) %>%
+    select(Exp, Obs, Part, Stim, time, x, y, x_pro, y_pro)
+  return(Data)
+}
+
+```
+
+```{r}
+
+csv_files <- dir(path = "Data/",
+             pattern = "*.csv",
+             recursive = T,
+             full.names = T)
+
+
+ABT25_0 <- 
+  read_abtest1_files(csv_files, Stimuli)
+
+head(ABT25_0)
+```
+
+### Raw data visualization
+
+###### Visualizes raw gaze data by overlaying gaze points on the stimuli grid. Gaze points provide an intuitive view of participant gaze behavior in relation to the stimuli.
+
+```{r}
+
+get_last_part <- function(data){
+  last_part <- 
+    distinct(data, Part) %>% 
+    filter(as.numeric(Part) == max(as.numeric(Part), na.rm = T)) %>% 
+    left_join(data, by = "Part")
+  return(last_part)
+}
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_0 +
+  geom_point(aes(x = x, y = y),
+             size = 7,
+             col = "orange",
+             alpha = .1,
+             data = get_last_part(ABT25_0),
+             inherit.aes = F) +
+  facet_wrap(~Stim)
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_0 +
+  geom_point(aes(x = x, y = y,
+                 col = Part), 
+             size = 6,
+             alpha = .1,
+             data = (ABT25_0), 
+             inherit.aes = F) +
+  facet_wrap(~Stim)
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_0 +
+  geom_point(aes(x = x, y = y,
+                 col = Part),
+             data = get_last_part(ABT25_0),
+             size = .1,
+             inherit.aes = F) +
+  geom_line(aes(x = x , 
+                y = y,
+                group = Part),
+                col = "red",
+             inherit.aes = F,
+            data = get_last_part(ABT25_0)) +
+  facet_wrap(~Stim)
+
+```
+
+```{r}
+
+ABT25_1 <- 
+  ABT25_0 %>% 
+  left_join(Stimuli, by = "Stim") %>% 
+  select(Obs, Part, Stim, Face, red_aoi, green_aoi, blue_aoi, white_aoi, time, x, y)
+
+sample_n(ABT25_1, 12)
+
+```
+
+### Deriving measures
+
+###### Calculates travel as the distance between consecutive gaze points to capture gaze movement dynamics and computes duration as the time spent at each gaze point to reflect fixation behavior. These measures provide valuable insights into participant gaze patterns and interactions with the stimuli.
+
+```{r}
+
+add_travel <- 
+  function(data) 
+    mutate(data,  travel = sqrt((x - lag(x))^2 + (y - lag(y))^2))
+
+add_duration <- 
+  function(data) 
+    mutate(data,  duration = lead(time) - time)
+
+ABT25_2 <- 
+  ABT25_1 %>% 
+  mutate(Sequence = as.factor(str_c(Part, Stim, sep = "_"))) %>% 
+  group_by(Sequence) %>% 
+  add_duration() %>% 
+  add_travel() %>% 
+  ungroup() %>% 
+  select(Obs, Part, Stim, Face, Sequence, red_aoi, green_aoi, blue_aoi, white_aoi, time, x, y, travel, duration)
+
+```
+
+```{r}
+ABT25_2 %>% 
+  ggplot(aes(x = duration)) +
+  geom_histogram(bins = 10) +
+  facet_wrap(~Stim)
+
+```
+
+```{r}
+
+ABT25_2 %>% 
+  ggplot(aes(x = travel)) +
+  geom_histogram(bins = 10) +
+  facet_wrap(~Stim)
+
+```
+
+### Areas of interest (AOI)
+
+###### Reads and processes metadata for the Areas of Interest (AOI) from a CSV file. The read_abtest1_aoi function loads AOI definitions for each stimulus, including position (x, y) and size (width, height), and matches them to the corresponding stimuli using the Face column. It calculates AOI boundaries (xmin, xmax, ymin, ymax) for visualization and organizes the data for overlaying AOIs on stimulus images in subsequent visualizations. This ensures that AOIs are correctly aligned with the stimuli for accurate gaze data analysis.
+
+```{r}
+
+read_abtest1_aoi <- 
+  function(file = "Stimuli/AOI.csv",
+           stim_dir = "Stimuli/",
+           col_types = cols(AOI = col_character(), Face = col_character(), 
+                            x = col_double(), y = col_double(), 
+                            w = col_double(), h = col_double()),
+           stim_tab) {
+    
+    read_csv(file, col_types = col_types) %>% 
+      rename(x_aoi = x, y_aoi = y, w_aoi = w, h_aoi = h) %>% 
+      right_join(stim_tab, by = "Face") %>% 
+      mutate(xmin = x_aoi, 
+             xmax = x_aoi + w_aoi,
+             ymax = height - y_aoi, ## reversing the y coordinates
+             ymin = (height - y_aoi) - h_aoi) %>% 
+      arrange(Face, AOI)
+  }
+
+```
+
+```{r}
+
+AOI <- read_abtest1_aoi(stim_tab = Stimuli)
+
+head(AOI)
+
+```
+
+### AOI preview
+
+###### Overlays AOI boundaries as semi-transparent, color-coded rectangles on stimulus images, helping to verify that AOIs are correctly aligned with their respective stimuli.
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_1 <- 
+  AOI %>% 
+  ggplot(aes(xmin = 0, xmax = width, 
+             ymin = 0, ymax = height)) +
+  facet_wrap(~Face) + 
+  ggimg::geom_rect_img(aes(img = Path)) +
+  geom_rect(aes(xmin = xmin, ymin = ymin, 
+                xmax = xmax, ymax = ymax,
+                fill = AOI),
+            alpha = .6, 
+            inherit.aes  = F)
+
+G_1
+
+```
+
+### AOI Classification
+
+###### Determines whether each gaze point falls within a specific AOI (Area of Interest). It classifies gaze points based on their coordinates relative to AOI boundaries and assigns them to the corresponding AOI and region (e.g., "Heading" or "Background"), preparing the data for focused analysis of participant interactions with defined areas.
+
+```{r}
+
+ABT25_3 <- 
+  ABT25_2 %>% 
+  left_join(AOI, by = "Face") %>% 
+  mutate(is_in = x > xmin & x < xmax & y > ymin & y < ymax) %>% 
+  filter(is_in) %>% 
+  select(Obs, AOI) %>% 
+  right_join(ABT25_2, by = "Obs") %>% 
+  mutate(AOI = if_else(is.na(AOI), "Outside", AOI)) %>% 
+  arrange(Part, time)
+
+```
+
+```{r}
+
+summary(ABT25_3)
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+
+ABT25_3 %>% 
+  group_by(AOI, red_aoi, green_aoi, blue_aoi, white_aoi) %>% 
+  summarize(n = n()) %>% 
+  ungroup() %>% 
+  ggplot(aes(y = n, x = AOI, fill = AOI)) +
+  facet_grid(red_aoi~green_aoi~blue_aoi~white_aoi) +
+  geom_col(data = . %>% filter(AOI != "Outside"))
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_0 +
+  geom_count(aes(x = x, y = y, 
+                 col = AOI),
+             alpha = .5,
+             inherit.aes  = F,
+             data = ABT25_3 %>% filter(AOI != "Outside"))
+
+```
+
+### Measuring visits
+
+###### A *visit* is a closed sequence of eye positions in the same region. The following code uses a combined criterion for setting a new visits:
+
+###### - the position falls into a different AOI
+
+###### - OR: the travel traveled from the previous position exceeds a certain threshold
+
+```{r}
+
+travel_threshold <- 50
+
+ABT25_4 <-
+
+  ABT25_3 %>%
+
+  group_by(Part, Stim) %>%
+
+  filter(AOI != lag(AOI) | travel > travel_threshold) %>% ## logical OR
+
+  mutate(visit = row_number(),
+
+         duration = lead(time) - time) %>%
+
+  ungroup()
+
+sample_n(ABT25_4, 15)
+
+```
+
+### Plotting visit paths and duration.
+
+###### Visualizes participant gaze paths by plotting their trajectories across stimuli, with the size or color of points indicating the duration of fixation within specific areas. This provides a clear representation of gaze movement and time spent in each region.
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_3 <-
+
+  G_0 +
+  geom_point(aes(x = x, y = y,
+                 size = duration), # <--
+             color = "pink",
+             alpha = .6,
+             inherit.aes  = F,
+             data = ABT25_4%>% filter(AOI != "Outside"))
+
+G_3
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_4 <-
+  G_0 +
+  geom_path(aes(x = x, y = y,
+                col = Part),
+            inherit.aes  = F,
+            data = ABT25_4 %>% filter(AOI != "Outside")) 
+
+G_4
+
+```
+
+```{r}
+
+ABT25_5 <-
+  ABT25_4 %>%
+  group_by(Part, Face, AOI, red_aoi, green_aoi, blue_aoi, white_aoi) %>%  # <--
+  summarize(n_visits = n(),
+            total_dur = sum(duration, na.rm = TRUE))
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+
+ABT25_5
+
+G_6 <-
+
+  ABT25_5 %>%
+  ggplot(aes(x = AOI, y = n_visits, fill = AOI)) +
+  geom_col(data = . %>% filter(AOI != "Outside"))
+
+G_6
+
+```
+
+```{r}
+
+G_7 <-
+  ABT25_5 %>%
+  ggplot(aes(x = AOI, y = total_dur, fill = AOI)) +
+  facet_wrap(~Part) +
+  geom_col(data = . %>% filter(AOI != "Outside"))
+
+G_7
+
+```
+
+```{r}
+
+save(AOI, ABT25_1, ABT25_2, ABT25_3, ABT25_4, ABT25_5, file = "M6G3ABTest.Rda")
+```
