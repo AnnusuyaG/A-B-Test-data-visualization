@@ -1,0 +1,307 @@
+---
+title: "ABTest"
+author: "A Ghimire"
+date: "24/12/2024"
+output: html_document
+---
+
+```
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width = 8)
+knitr::opts_chunk$set(fig.height = 8)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(printr)
+
+require(readxl)
+require(jpeg)
+require(ggimg)
+
+```
+
+# Input and preparation
+
+## Reading Stimulus meta data
+
+```{r}
+
+read_abtest_stim <- function(file = "Stimuli/Stimuli.csv", 
+                             stim_dir = "Stimuli/",
+                             col_types = cols(File = col_character(),
+                                              width = col_double(),
+                                              height = col_double(),
+                                              mid_x = col_double())) {
+  stimuli <- read_csv(file, col_types = col_types) %>% 
+    mutate(Path = str_c(stim_dir, File, sep = ""))
+  return(stimuli)
+}
+
+```  
+
+```{r}
+
+my_stim_col_types <- cols( File = col_character(),
+                           width = col_double(),
+                           height = col_double(),
+                           left_heading = col_character(),
+                           left_background = col_character(),
+                           right_heading = col_character(),
+                           right_background = col_character(),
+                           mid_x = col_double())
+
+Stimuli <- read_abtest_stim(file = "Stimuli/Stimuli.csv", col_types = my_stim_col_types)
+
+``` 
+
+## Making a stimulus grid
+## Creates a grid of stimuli for visual inspection.
+
+```{r, fig.height = 8, fig.width = 8}
+
+G_0 <- Stimuli %>% 
+  ggplot(aes(xmin = 0, xmax = width, ymin = 0, ymax = height)) +
+  facet_wrap(~File) +
+  ggimg::geom_rect_img(aes(img = Path))
+
+```
+
+## Reading AOI 
+##  This function reads Areas of Interest (AOI) data and computes their coordinates relative to each stimulus.
+
+```{r}
+
+read_abtest_aoi <- function(file = "Stimuli/AOI.csv", stim_tab) {
+  read_csv(file, 
+           col_types = cols(Stimuli = col_character(), AOI = col_character(), 
+                            x = col_double(), y = col_double(), 
+                            w = col_double(), h = col_double(), Region = col_character())) %>% 
+    rename(x_aoi = x, y_aoi = y, w_aoi = w, h_aoi = h) %>% 
+    left_join(stim_tab, by = c("Stimuli" = "File")) %>% 
+    mutate(xmin = x_aoi, 
+           xmax = x_aoi + w_aoi,
+           ymax = height - y_aoi, 
+           ymin = (height - y_aoi) - h_aoi) %>% 
+    arrange(Stimuli, AOI)
+}
+
+AOI <- read_abtest_aoi(file = "Stimuli/AOI.csv", stim_tab = Stimuli)
+
+```
+
+## AOI preview
+## Visualizes AOIs on top of stimuli images.
+```{r}
+
+G_1 <- AOI %>% 
+  ggplot(aes(xmin = 0, xmax = width, ymin = 0, ymax = height)) +
+  facet_wrap(~Stimuli) +
+  ggimg::geom_rect_img(aes(img = Path)) +
+  geom_rect(aes(xmin = xmin, ymin = ymin, xmax = xmax, ymax = ymax, fill = AOI),
+            alpha = 0.2, inherit.aes = FALSE)
+
+#G_1
+
+```
+
+## Reading Participant Data csv
+## Reads and cleans individual participant gaze 
+
+```{r}
+
+read_abtest_csv <- function(file) {
+  read_csv(file, 
+           col_types = cols(Exp = col_character(), Part = col_character(), 
+                            Stimuli = col_character(), time = col_double(), 
+                            x = col_double(), y = col_double(), 
+                            x_pro = col_double(), y_pro = col_double())) %>% 
+    mutate(is_duplicate = x == lag(x) & y == lag(y)) %>% 
+    filter(!is_duplicate) %>% 
+    mutate(File = file) %>% 
+    select(Exp, Part, Stimuli, time, x, y, x_pro, y_pro)
+}
+
+```
+
+
+# Reads and combines multiple participant files, aligning them with Stimuli metadata.
+
+```{r}
+
+read_abtest_files <- function(files, stim_tab) {
+  #Data <- 
+  files %>% 
+    map_df(read_abtest_csv) %>% 
+    mutate(Obs = row_number()) %>% 
+    mutate(Part = as.factor(as.integer(Part) - min(as.integer(Part)) + 1)) %>% 
+    group_by(Part) %>% 
+    mutate(time = time - min(time)) %>% 
+    ungroup() %>% 
+    left_join(stim_tab, by = c("Stimuli" = "Stimuli")) %>% 
+    mutate(y = height - y, y_pro = 1 - y_pro) %>% 
+    select(Exp, Obs, Part, Stimuli, time, x, y, x_pro, y_pro)
+  #return(Data)
+}
+
+```
+
+```{r}
+
+csv_files <- dir(path = "Data/", pattern = "*.csv", recursive = TRUE, full.names = TRUE)
+Participant_Data <- read_abtest_files(csv_files, Stimuli)
+
+```
+
+## Raw Data Visualization.
+## Overlays the last participant's gaze points on the stimuli grid.
+
+```{r}
+
+get_last_part <- function(data) {
+  data %>% 
+    distinct(Part) %>% 
+    filter(as.numeric(Part) == max(as.numeric(Part), na.rm = TRUE)) %>% 
+    left_join(data, by = "Part")
+  return(last_part)
+}
+
+
+```
+
+```{r}
+
+G_0 +
+  geom_point(aes(x = x, y = y),
+             size = 2, color = "red", alpha = 0.2,
+             data = get_last_part(Participant_Data),
+             inherit.aes = FALSE) +
+  facet_wrap(~Stimuli)
+
+```
+
+## AOI Classification
+
+```{r}
+
+Participant_Data_AOI <- Participant_Data %>% 
+  left_join(AOI, by = "Stimuli") %>% 
+  mutate(is_in = x > xmin & x < xmax & y > ymin & y < ymax) %>% 
+  filter(is_in) %>% 
+  select(Obs, AOI) %>% 
+  right_join(Participant_Data, by = "Obs") %>% 
+  mutate(AOI = if_else(is.na(AOI), "Outside", AOI)) %>% 
+  arrange(Part, time)
+
+summary(Participant_Data_AOI)
+
+```
+
+## Measuring Visits
+
+## Derive Visits Based on Travel Threshold
+
+```{r}
+
+travel_threshold <- 50
+
+Participant_Visits <- Participant_Data_AOI %>% 
+  group_by(Part, Stimuli) %>% 
+  filter(AOI != lag(AOI) | travel > travel_threshold) %>% 
+  mutate(visit = row_number(),
+         duration = lead(time) - time) %>% 
+  ungroup()
+
+```
+
+## Participant-level Summary
+
+### Frequencies and durations
+
+```{r}
+
+Participant_Summary <- Participant_Visits %>% 
+  group_by(Part, AOI, Region) %>% 
+  summarize(n_visits = n(),
+            total_dur = sum(duration, na.rm = TRUE)) %>% 
+  ungroup
+
+```
+
+## Aggregate Fixation Durations by Color
+
+```{r}
+
+color_attention <- Participant_Data_AOI %>% 
+  group_by(AOI) %>% 
+  summarize(total_dur = sum(duration, na.rm = TRUE)) %>%  # Summing fixation durations for each AOI
+  ungroup() %>% 
+  separate(AOI, into = c("Color", "Region"), sep = "_") %>%  # Split AOI into color and region
+  group_by(Color) %>% 
+  summarize(color_total_dur = sum(total_dur))  # Aggregate across regions
+
+```
+
+# Visualize the total fixation duration by color
+
+```{r}
+
+color_attention %>% 
+  ggplot(aes(x = Color, y = color_total_dur, fill = Color)) +
+  geom_col() +
+  labs(title = "Total Fixation Duration by Color", 
+       x = "Color", 
+       y = "Total Fixation Duration") +
+  theme_minimal()
+
+```
+
+## Examine Fixation Trends by Color and Region
+
+```{r}
+
+color_region_attention <- Participant_Data_AOI %>% 
+  group_by(AOI) %>% 
+  summarize(total_dur = sum(duration, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  separate(AOI, into = c("Color", "Region"), sep = "_") %>% 
+  group_by(Color, Region) %>% 
+  summarize(region_total_dur = sum(total_dur))  # Aggregate fixation durations by color and region
+
+```
+
+# Visualize fixation duration by color and region
+
+```{r}
+
+color_region_attention %>% 
+  ggplot(aes(x = Region, y = region_total_dur, fill = Color)) +
+  geom_col(position = "dodge") +
+  labs(title = "Fixation Duration by Color and Region", 
+       x = "Region", 
+       y = "Total Fixation Duration") +
+  theme_minimal()
+```
+
+## Visualization of Fixation Durations by AOI
+
+```{r}
+
+G_2 <- Participant_Summary %>% 
+  ggplot(aes(x = AOI, y = total_dur, fill = Region)) +
+  facet_wrap(~Part) +
+  geom_col()
+
+G_2
+
+```
+
+
+```{r}
+
+save(AOI, Participant_Data, Participant_Data_AOI, color_attention, color_region_attention, Participant_Visits, Participant_Summary, file = "abtest_results.Rda")
+
+```
